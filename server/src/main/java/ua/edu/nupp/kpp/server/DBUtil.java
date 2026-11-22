@@ -13,7 +13,11 @@ public final class DBUtil {
     }
 
     public static Connection getConnection() throws SQLException {
+        try {
+            Class.forName("com.mysql.cj.jdbc.Driver");
+        } catch (ClassNotFoundException e) {
+            throw new SQLException("Не знайдено драйвер MySQL", e);
+        }
         return DriverManager.getConnection(URL, USER, PASSWORD);
     }
 }
-

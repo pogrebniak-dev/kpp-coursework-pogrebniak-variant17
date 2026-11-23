@@ -16,6 +16,9 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
+import java.nio.file.Path;
+import java.util.logging.Level;
+import java.util.logging.Logger;
 
 public class MainApp extends Application {
 
@@ -42,6 +45,9 @@ public class MainApp extends Application {
         return new Observation(null, fieldId, obsDate, f1, f2, f3);
     }
     private final HttpMonitoringClient api = new HttpMonitoringClient();
+
+    private static final Logger LOG = Logger.getLogger(MainApp.class.getName());
+    private static final Path CSV_PATH = Path.of("sample-data", "field_observations.csv");
 
     private final TableView<Field> fieldTable = new TableView<>();
     private final TableView<Observation> obsTable = new TableView<>();
@@ -177,13 +183,6 @@ public class MainApp extends Application {
             refreshObservations();
         }));
 
-        Button importOneBtn = new Button("Імпорт 1 рядка CSV");
-        importOneBtn.setOnAction(e -> safe(() -> {
-            Observation obs = readTestObservation();
-            api.addObservation(obs.getFieldId(), obs.getObsDate(), obs.getF1(), obs.getF2(), obs.getF3());
-            refreshObservations();
-        }));
-
         Button updateBtn = new Button("Змінити");
         updateBtn.setOnAction(e -> safe(() -> {
             Observation selected = requireSelected(obsTable);
@@ -208,6 +207,59 @@ public class MainApp extends Application {
         Button refreshBtn = new Button("Оновити");
         refreshBtn.setOnAction(e -> safe(this::refreshObservations));
 
+        ProgressBar progressBar = new ProgressBar(0);
+        progressBar.setPrefWidth(200);
+
+        Label statusLabel = new Label("CSV не імпортовано");
+
+        Button importCsvBtn = new Button("Імпортувати CSV");
+        importCsvBtn.setOnAction(e -> {
+            progressBar.progressProperty().unbind();
+            statusLabel.textProperty().unbind();
+            progressBar.setProgress(0);
+
+            ImportObservationsTask task = new ImportObservationsTask(CSV_PATH, api);
+            progressBar.progressProperty().bind(task.progressProperty());
+            statusLabel.textProperty().bind(task.messageProperty());
+            importCsvBtn.setDisable(true);
+
+            task.setOnSucceeded(ev -> {
+                progressBar.progressProperty().unbind();
+                statusLabel.textProperty().unbind();
+                int importedCount = task.getValue() == null ? 0 : task.getValue();
+                progressBar.setProgress(importedCount > 0 ? 1.0 : 0.0);
+                statusLabel.setText("Готово. Імпортовано: " + importedCount);
+                importCsvBtn.setDisable(false);
+                refreshObservations();
+            });
+
+            task.setOnFailed(ev -> {
+                progressBar.progressProperty().unbind();
+                statusLabel.textProperty().unbind();
+                progressBar.setProgress(0);
+                Throwable ex = task.getException();
+                String message = (ex == null || ex.getMessage() == null || ex.getMessage().isBlank())
+                        ? "Помилка під час імпорту CSV"
+                        : ex.getMessage();
+                LOG.log(Level.WARNING, "Помилка фонового CSV-імпорту: " + message, ex);
+                statusLabel.setText("Помилка: " + message);
+                importCsvBtn.setDisable(false);
+                showError(message);
+            });
+
+            task.setOnCancelled(ev -> {
+                progressBar.progressProperty().unbind();
+                statusLabel.textProperty().unbind();
+                statusLabel.setText("Імпорт скасовано; частина записів могла бути збережена");
+                importCsvBtn.setDisable(false);
+                refreshObservations();
+            });
+
+            Thread worker = new Thread(task, "csv-import-observations");
+            worker.setDaemon(true);
+            worker.start();
+        });
+
         GridPane form = new GridPane();
         form.setHgap(10);
         form.setVgap(8);
@@ -215,8 +267,11 @@ public class MainApp extends Application {
         form.addRow(1, new Label("Дата спостереження:"), dateField, new Label("F2 (0..100):"), f2Field);
         form.addRow(2, new Label(""), new Label(""), new Label("F3 (0..100):"), f3Field);
 
-        HBox buttons = new HBox(10, addBtn, updateBtn, deleteBtn, refreshBtn, importOneBtn);
-        VBox bottom = new VBox(10, form, buttons);
+        HBox crudButtons = new HBox(10, addBtn, updateBtn, deleteBtn, refreshBtn);
+        HBox importBar = new HBox(10, importCsvBtn, progressBar, statusLabel);
+        importBar.setAlignment(javafx.geometry.Pos.CENTER_LEFT);
+
+        VBox bottom = new VBox(10, form, crudButtons, importBar);
         bottom.setPadding(new Insets(10));
 
         BorderPane pane = new BorderPane(obsTable);
